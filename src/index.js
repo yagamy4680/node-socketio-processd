@@ -16,16 +16,12 @@ class ProcessManager extends EventEmitter {
     this.args = args;
     this.options = options;
     this.child = null;
-    this.clients = new Set();
+    this.commanderClient = null;
+    this.monitorClients = new Set();
     this.lastLogTime = 0;
     this.byteCounts = { stdout: 0, stderr: 0 };
     this.logInterval = parseInt(process.env.LOG_INTERVAL_MS) || 1000;
-    
-    // Simple event history for new clients
     this.processInfo = null;
-    this.outputHistory = [];
-    this.exitInfo = null;
-    this.hasExited = false;
     
     if (!this.options.verbose) {
       setInterval(() => {
@@ -34,60 +30,13 @@ class ProcessManager extends EventEmitter {
     }
   }
 
-  emitAndBuffer(eventType, eventData) {
-    // Store in output history for replay to new clients
-    this.outputHistory.push({ type: eventType, data: eventData });
-    
-    // Emit to current clients
-    this.emit(eventType, eventData);
-  }
-
-  replayEventsToClient(socket) {
-    // Send process info first if available
-    if (this.processInfo) {
-      socket.emit('child-info', this.processInfo);
-    }
-
-    // Replay buffered events
-    this.outputHistory.forEach(({ type, data }) => {
-      if (type !== 'child-info') { // Don't duplicate child-info
-        socket.emit(type, data);
-      }
-    });
-
-    // Send exit info if process has exited
-    if (this.hasExited && this.exitInfo) {
-      socket.emit('child-exit', this.exitInfo);
-    }
-  }
-
-  start(isRestart = false) {
+  start() {
     if (this.child) {
-      this.log('Process already running, killing existing process...');
-      this.child.kill('SIGTERM');
-      
-      // Wait for process to exit, then restart
-      setTimeout(() => {
-        if (this.child && !this.child.killed) {
-          this.log('Force killing process...');
-          this.child.kill('SIGKILL');
-        }
-        this._spawn(true);
-      }, 5000);
-    } else {
-      this._spawn(isRestart);
+      this.log('Process already running, ignoring start request');
+      return;
     }
-  }
 
-  _spawn(isRestart = false) {
     this.log(`Starting process: ${this.command} ${this.args.join(' ')}`);
-    
-    // Reset state for new process
-    if (!isRestart) {
-      this.outputHistory = [];
-      this.hasExited = false;
-      this.exitInfo = null;
-    }
     
     this.child = spawn(this.command, this.args, {
       stdio: ['pipe', 'pipe', 'pipe']
@@ -98,13 +47,8 @@ class ProcessManager extends EventEmitter {
       command: `${this.command} ${this.args.join(' ')}`
     };
 
-    // Always emit process info (don't buffer - handled in addClient)
+    // Emit process info to all clients
     this.emit('child-info', this.processInfo);
-    
-    // Only emit restart event if this is actually a restart
-    if (isRestart) {
-      this.emit('child-restart', this.processInfo); // Don't buffer restart events
-    }
 
     // Handle stdout
     this.child.stdout.on('data', (data) => {
@@ -120,7 +64,7 @@ class ProcessManager extends EventEmitter {
             time: Date.now(),
             line: line
           };
-          this.emitAndBuffer('child-stdout-line', eventData);
+          this.emit('child-stdout-line', eventData);
         });
       } else {
         if (this.options.verbose) {
@@ -130,7 +74,7 @@ class ProcessManager extends EventEmitter {
           time: Date.now(),
           data: data
         };
-        this.emitAndBuffer('child-stdout', eventData);
+        this.emit('child-stdout', eventData);
       }
     });
 
@@ -148,7 +92,7 @@ class ProcessManager extends EventEmitter {
             time: Date.now(),
             line: line
           };
-          this.emitAndBuffer('child-stderr-line', eventData);
+          this.emit('child-stderr-line', eventData);
         });
       } else {
         if (this.options.verbose) {
@@ -158,7 +102,7 @@ class ProcessManager extends EventEmitter {
           time: Date.now(),
           data: data
         };
-        this.emitAndBuffer('child-stderr', eventData);
+        this.emit('child-stderr', eventData);
       }
     });
 
@@ -166,17 +110,11 @@ class ProcessManager extends EventEmitter {
     this.child.on('exit', (code, signal) => {
       this.log(`Process exited with code ${code}, signal: ${signal}`);
       
-      this.exitInfo = { code, signal };
-      this.hasExited = true;
+      const exitInfo = { code, signal };
+      this.emit('child-exit', exitInfo);
       
-      this.emitAndBuffer('child-exit', this.exitInfo);
-      
-      if (this.options.restart) {
-        this.log('Restarting process due to --restart option...');
-        setTimeout(() => this.start(true), 1000);
-      } else {
-        this.child = null;
-      }
+      this.child = null;
+      this.processInfo = null;
     });
 
     // Handle process errors
@@ -236,19 +174,39 @@ class ProcessManager extends EventEmitter {
     });
   }
 
-  addClient(clientId, socket) {
-    this.clients.add(clientId);
-    // Replay events to the new client
-    this.replayEventsToClient(socket);
+  addCommanderClient(clientId) {
+    if (this.commanderClient) {
+      return false; // Reject: commander already exists
+    }
+    this.commanderClient = clientId;
+    this.log(`Commander client connected: ${clientId}`);
+    this.start(); // Start child process when commander connects
+    return true;
   }
 
-  removeClient(clientId) {
-    this.clients.delete(clientId);
-    this.log(`Client ${clientId} disconnected. Active clients: ${this.clients.size}`);
+  removeCommanderClient(clientId) {
+    if (this.commanderClient === clientId) {
+      this.log(`Commander client disconnected: ${clientId}`);
+      this.commanderClient = null;
+      if (this.child) {
+        this.log('Killing child process due to commander disconnect');
+        this.kill();
+      }
+    }
   }
 
-  hasClients() {
-    return this.clients.size > 0;
+  addMonitorClient(clientId) {
+    this.monitorClients.add(clientId);
+    this.log(`Monitor client connected: ${clientId}. Active monitors: ${this.monitorClients.size}`);
+  }
+
+  removeMonitorClient(clientId) {
+    this.monitorClients.delete(clientId);
+    this.log(`Monitor client disconnected: ${clientId}. Active monitors: ${this.monitorClients.size}`);
+  }
+
+  hasCommanderClient() {
+    return !!this.commanderClient;
   }
 
   log(message) {
@@ -293,63 +251,80 @@ function createServer(options) {
 
   const processOptions = {
     verbose: options.verbose,
-    line: options.line,
-    restart: options.restart
+    line: options.line
   };
 
   // Create process manager
   processManager = new ProcessManager(command, args, processOptions);
 
-  // Forward events from process manager to Socket.IO clients
-  ['child-stdout', 'child-stderr', 'child-stdout-line', 'child-stderr-line', 'child-exit', 'child-info', 'child-restart'].forEach(eventName => {
+  // Create namespaces
+  const commanderNamespace = io.of('/commander');
+  const monitorNamespace = io.of('/monitor');
+
+  // Forward events from process manager to both namespaces
+  ['child-stdout', 'child-stderr', 'child-stdout-line', 'child-stderr-line', 'child-exit', 'child-info'].forEach(eventName => {
     processManager.on(eventName, (data) => {
-      io.emit(eventName, data);
+      commanderNamespace.emit(eventName, data);
+      monitorNamespace.emit(eventName, data);
     });
   });
 
-  // Socket.IO event handlers
-  io.on('connection', (socket) => {
-    console.log(`Client connected: ${socket.id}`);
+  // Commander namespace - only one client allowed, full control
+  commanderNamespace.on('connection', (socket) => {
+    const success = processManager.addCommanderClient(socket.id);
     
-    processManager.addClient(socket.id, socket);
-
-    // Start process if waiting for clients and this is the first client
-    if (options.wait && processManager.clients.size === 1 && !processManager.child) {
-      console.log('First client connected, starting process...');
-      processManager.start();
+    if (!success) {
+      console.log(`Commander client connection rejected (already exists): ${socket.id}`);
+      socket.emit('connection-rejected', { reason: 'Commander client already connected' });
+      socket.disconnect(true);
+      return;
     }
 
-    // Handle stdin from client
+    // Send current process info if available
+    if (processManager.processInfo) {
+      socket.emit('child-info', processManager.processInfo);
+    }
+
+    // Handle stdin from commander
     socket.on('child-stdin', (data) => {
       if (options.verbose) {
-        console.log(`Received stdin from client ${socket.id}: ${data}`);
+        console.log(`Received stdin from commander ${socket.id}: ${data}`);
       }
       processManager.writeToStdin(data);
     });
 
-    // Handle restart requests
-    socket.on('request-restart', () => {
-      if (options.restart) {
-        console.log(`Restart requested by client ${socket.id}`);
-        processManager.start(true);
-      } else {
-        console.log(`Restart requested by client ${socket.id}, but --restart option is not enabled`);
-      }
-    });
-
     socket.on('disconnect', () => {
-      processManager.removeClient(socket.id);
+      processManager.removeCommanderClient(socket.id);
     });
   });
 
-  // Start the process immediately if not waiting for clients
-  if (!options.wait) {
-    processManager.start();
-  }
+  // Monitor namespace - multiple clients allowed, read-only
+  monitorNamespace.on('connection', (socket) => {
+    processManager.addMonitorClient(socket.id);
+
+    // Send current process info if available
+    if (processManager.processInfo) {
+      socket.emit('child-info', processManager.processInfo);
+    }
+
+    // Ignore stdin from monitor clients
+    socket.on('child-stdin', (data) => {
+      if (options.verbose) {
+        console.log(`Ignoring stdin from monitor client ${socket.id}: ${data}`);
+      }
+      socket.emit('error', { message: 'Monitor clients cannot send stdin data' });
+    });
+
+    socket.on('disconnect', () => {
+      processManager.removeMonitorClient(socket.id);
+    });
+  });
 
   // Start the server
   server.listen(options.port, () => {
     console.log(`Socket.IO server listening on port ${options.port}`);
+    console.log(`Commander namespace: /commander (single client)`);
+    console.log(`Monitor namespace: /monitor (multiple clients)`);
     if (options.verbose) {
       console.log(`Options: ${JSON.stringify(processOptions, null, 2)}`);
     }
@@ -400,18 +375,6 @@ const argv = yargs(hideBin(process.argv))
     default: false,
     describe: 'Enable verbose logging'
   })
-  .option('wait', {
-    alias: 'w',
-    type: 'boolean',
-    default: false,
-    describe: 'Wait for a client to connect before starting the child process'
-  })
-  .option('restart', {
-    alias: 'r',
-    type: 'boolean',
-    default: false,
-    describe: 'Automatically restart the child process if it exits'
-  })
   .option('line', {
     alias: 'l',
     type: 'boolean',
@@ -420,7 +383,7 @@ const argv = yargs(hideBin(process.argv))
   })
   .help()
   .example('$0 --port 4000 --verbose -- echo "Hello World"', 'Run echo command with verbose logging on port 4000')
-  .example('$0 --wait --restart -- node server.js', 'Wait for client and auto-restart node server')
+  .example('$0 --line -- tail -f /var/log/system.log', 'Monitor system log in line mode')
   .demandCommand(1, 'You must specify a command to run after --')
   .argv;
 

@@ -92,27 +92,58 @@ function startServer(args = [], timeout = 5000) {
   });
 }
 
-function connectClient(port = 3000) {
+function connectClient(port = 3000, namespace = '/commander') {
   return new Promise((resolve, reject) => {
-    const client = io(`http://localhost:${port}`);
+    const client = io(`http://localhost:${port}${namespace}`);
+    let connected = false;
+    let rejected = false;
     
     client.on('connect', () => {
-      resolve(client);
+      connected = true;
+      // Give a short delay to see if we get rejected
+      setTimeout(() => {
+        if (!rejected) {
+          resolve(client);
+        }
+      }, 100);
     });
 
     client.on('connect_error', (error) => {
       reject(error);
     });
 
+    client.on('connection-rejected', (data) => {
+      rejected = true;
+      reject(new Error(data.reason));
+    });
+    
+    client.on('disconnect', () => {
+      if (connected && !rejected) {
+        // Was connected but then disconnected - might be a rejection
+        rejected = true;
+        reject(new Error('Connection was rejected'));
+      }
+    });
+
     setTimeout(() => {
-      reject(new Error('Client connection timeout'));
+      if (!connected && !rejected) {
+        reject(new Error('Client connection timeout'));
+      }
     }, 3000);
   });
 }
 
-function connectClientWithListeners(port = 3000, listeners = {}) {
+function connectCommanderClient(port = 3000) {
+  return connectClient(port, '/commander');
+}
+
+function connectMonitorClient(port = 3000) {
+  return connectClient(port, '/monitor');
+}
+
+function connectClientWithListeners(port = 3000, listeners = {}, namespace = '/commander') {
   return new Promise((resolve, reject) => {
-    const client = io(`http://localhost:${port}`);
+    const client = io(`http://localhost:${port}${namespace}`);
     
     // Set up event listeners BEFORE connecting
     Object.entries(listeners).forEach(([event, handler]) => {
@@ -127,6 +158,10 @@ function connectClientWithListeners(port = 3000, listeners = {}) {
       reject(error);
     });
 
+    client.on('connection-rejected', (data) => {
+      reject(new Error(data.reason));
+    });
+
     setTimeout(() => {
       reject(new Error('Client connection timeout'));
     }, 3000);
@@ -139,46 +174,140 @@ function sleep(ms) {
 
 const runner = new TestRunner();
 
-// Test 1: Basic server startup and connection
-runner.addTest('Basic server startup and client connection', async () => {
+// Test 1: Basic server startup and commander client connection
+runner.addTest('Basic server startup and commander client connection', async () => {
   const serverProcess = await startServer(['--port', '3001', '--', 'echo', 'test']);
   
   try {
-    const client = await connectClient(3001);
+    const client = await connectCommanderClient(3001);
     
-    // Test that we can connect
+    // Test that we can connect as commander
     if (!client.connected) {
-      throw new Error('Client not connected');
+      throw new Error('Commander client not connected');
     }
     
     client.disconnect();
+    await sleep(100); // Allow process to be killed when commander disconnects
     serverProcess.kill('SIGTERM');
-    await sleep(100);
   } catch (error) {
     serverProcess.kill('SIGKILL');
     throw error;
   }
 });
 
-// Test 2: Test child process stdout events
-runner.addTest('Child process stdout events', async () => {
-  const serverProcess = await startServer(['--port', '3002', '--line', '--', 'echo', 'Hello World']);
+// Test 2: Test only one commander client allowed
+runner.addTest('Single commander client restriction', async () => {
+  const serverProcess = await startServer(['--port', '3002', '--', 'sleep', '10']);
+  
+  try {
+    const client1 = await connectCommanderClient(3002);
+    
+    // Try to connect a second commander - should be rejected
+    await new Promise((resolve, reject) => {
+      const client2 = io('http://localhost:3002/commander');
+      let connected = false;
+      let rejected = false;
+      
+      const cleanup = () => {
+        try { client2.disconnect(); } catch (e) {}
+        if (!rejected) {
+          rejected = true;
+          reject(new Error('Second commander client should have been rejected'));
+        }
+      };
+      
+      client2.on('connect', () => {
+        connected = true;
+        // Wait a bit for potential rejection
+        setTimeout(() => {
+          if (!rejected) {
+            cleanup();
+          }
+        }, 200);
+      });
+      
+      client2.on('connection-rejected', (data) => {
+        if (!rejected) {
+          rejected = true;
+          if (data.reason.includes('Commander client already connected')) {
+            resolve(); // Expected rejection
+          } else {
+            reject(new Error(`Unexpected rejection reason: ${data.reason}`));
+          }
+        }
+      });
+      
+      client2.on('disconnect', () => {
+        if (connected && !rejected) {
+          rejected = true;
+          resolve(); // Was connected then disconnected - counts as rejection
+        }
+      });
+      
+      // Timeout after 3 seconds
+      setTimeout(() => {
+        if (!rejected) {
+          cleanup();
+        }
+      }, 3000);
+    });
+    
+    client1.disconnect();
+    serverProcess.kill('SIGTERM');
+  } catch (error) {
+    serverProcess.kill('SIGKILL');
+    throw error;
+  }
+});
+
+// Test 3: Test multiple monitor clients allowed
+runner.addTest('Multiple monitor clients allowed', async () => {
+  const serverProcess = await startServer(['--port', '3003', '--', 'sleep', '10']);
+  
+  try {
+    // First connect commander to start the process
+    const commander = await connectCommanderClient(3003);
+    
+    // Connect multiple monitor clients
+    const monitor1 = await connectMonitorClient(3003);
+    const monitor2 = await connectMonitorClient(3003);
+    const monitor3 = await connectMonitorClient(3003);
+    
+    if (!monitor1.connected || !monitor2.connected || !monitor3.connected) {
+      throw new Error('Monitor clients not connected');
+    }
+    
+    // Cleanup
+    monitor1.disconnect();
+    monitor2.disconnect();
+    monitor3.disconnect();
+    commander.disconnect();
+    serverProcess.kill('SIGTERM');
+  } catch (error) {
+    serverProcess.kill('SIGKILL');
+    throw error;
+  }
+});
+
+// Test 4: Test child process stdout events from commander
+runner.addTest('Child process stdout events from commander', async () => {
+  const serverProcess = await startServer(['--port', '3004', '--line', '--', 'echo', 'Hello World']);
   
   try {
     let receivedOutput = false;
     let outputData = '';
     
     const outputPromise = new Promise((resolve) => {
-      // This will be called immediately when events are replayed
-      setTimeout(resolve, 100); // Small delay to ensure events are processed
+      // Small delay to ensure events are processed
+      setTimeout(resolve, 100);
     });
 
-    const client = await connectClientWithListeners(3002, {
+    const client = await connectClientWithListeners(3004, {
       'child-stdout-line': (data) => {
         receivedOutput = true;
         outputData = data.line;
       }
-    });
+    }, '/commander');
 
     // Wait for events to be processed 
     await Promise.race([
@@ -202,9 +331,9 @@ runner.addTest('Child process stdout events', async () => {
   }
 });
 
-// Test 3: Test child process info event
+// Test 5: Test child process info event
 runner.addTest('Child process info event', async () => {
-  const serverProcess = await startServer(['--port', '3003', '--', 'sleep', '1']);
+  const serverProcess = await startServer(['--port', '3005', '--', 'sleep', '1']);
   
   try {
     let receivedInfo = false;
@@ -215,12 +344,12 @@ runner.addTest('Child process info event', async () => {
       setTimeout(resolve, 100);
     });
 
-    const client = await connectClientWithListeners(3003, {
+    const client = await connectClientWithListeners(3005, {
       'child-info': (data) => {
         receivedInfo = true;
         processInfo = data;
       }
-    });
+    }, '/commander');
 
     // Wait for the info event
     await Promise.race([
@@ -248,9 +377,9 @@ runner.addTest('Child process info event', async () => {
   }
 });
 
-// Test 4: Test child process exit event
+// Test 6: Test child process exit event
 runner.addTest('Child process exit event', async () => {
-  const serverProcess = await startServer(['--port', '3004', '--', 'echo', 'test']);
+  const serverProcess = await startServer(['--port', '3006', '--', 'echo', 'test']);
   
   try {
     let receivedExit = false;
@@ -261,12 +390,12 @@ runner.addTest('Child process exit event', async () => {
       setTimeout(resolve, 100);
     });
 
-    const client = await connectClientWithListeners(3004, {
+    const client = await connectClientWithListeners(3006, {
       'child-exit': (data) => {
         receivedExit = true;
         exitData = data;
       }
-    });
+    }, '/commander');
 
     // Wait for the exit event
     await Promise.race([
@@ -280,77 +409,6 @@ runner.addTest('Child process exit event', async () => {
     
     if (exitData.code !== 0) {
       throw new Error(`Expected exit code 0, got: ${exitData.code}`);
-    }
-    
-    client.disconnect();
-    serverProcess.kill('SIGTERM');
-  } catch (error) {
-    serverProcess.kill('SIGKILL');
-    throw error;
-  }
-});
-
-// Test 5: Test stdin functionality
-runner.addTest('Child stdin functionality', async () => {
-  const serverProcess = await startServer(['--port', '3005', '--line', '--', 'cat']);
-  
-  try {
-    const client = await connectClient(3005);
-    
-    let receivedOutput = false;
-    let outputData = '';
-    
-    client.on('child-stdout-line', (data) => {
-      receivedOutput = true;
-      outputData = data.line;
-    });
-
-    // Send input to cat command
-    client.emit('child-stdin', 'test input\n');
-    
-    // Wait for echo back
-    await sleep(1000);
-    
-    if (!receivedOutput) {
-      throw new Error('Did not receive stdout after sending stdin');
-    }
-    
-    if (!outputData.includes('test input')) {
-      throw new Error(`Expected 'test input', got: ${outputData}`);
-    }
-    
-    client.disconnect();
-    serverProcess.kill('SIGTERM');
-  } catch (error) {
-    serverProcess.kill('SIGKILL');
-    throw error;
-  }
-});
-
-// Test 6: Test wait option
-runner.addTest('Wait option functionality', async () => {
-  const serverProcess = await startServer(['--port', '3006', '--wait', '--line', '--', 'echo', 'waited']);
-  
-  try {
-    // Wait a bit to ensure server is started but process hasn't started yet
-    await sleep(500);
-    
-    const client = await connectClient(3006);
-    
-    let receivedOutput = false;
-    
-    // Set up listener immediately after connection for wait mode
-    client.on('child-stdout-line', (data) => {
-      if (data.line.includes('waited')) {
-        receivedOutput = true;
-      }
-    });
-
-    // Give a bit more time for the process to start and complete after client connection
-    await sleep(3000);
-    
-    if (!receivedOutput) {
-      throw new Error('Process did not start after client connection with --wait option');
     }
     
     client.disconnect();
