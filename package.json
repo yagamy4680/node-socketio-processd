@@ -1,0 +1,35 @@
+{
+  "name": "node-socketio-processd",
+  "version": "1.0.0",
+  "description": "A command-line tool that wraps existing CLI programs and allows access via Socket.IO",
+  "main": "src/index.js",
+  "bin": {
+    "node-socketio-processd": "./bin/node-socketio-processd"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/test.js",
+    "dev": "node src/index.js"
+  },
+  "keywords": [
+    "socketio",
+    "process",
+    "cli",
+    "wrapper",
+    "realtime"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4",
+    "yargs": "^17.7.2",
+    "colors": "^1.4.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.4"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
