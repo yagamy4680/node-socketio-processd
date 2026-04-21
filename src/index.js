@@ -194,14 +194,46 @@ class ProcessManager extends EventEmitter {
   }
 
   kill() {
-    if (this.child) {
-      this.child.kill('SIGTERM');
+    return new Promise((resolve) => {
+      if (!this.child) {
+        resolve();
+        return;
+      }
+
+      const child = this.child;
+      let resolved = false;
+
+      // Listen for the child process to exit
+      const onExit = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      };
+
+      child.once('exit', onExit);
+      child.once('close', onExit);
+
+      // Try graceful termination first
+      console.log('Sending SIGTERM to child process...');
+      child.kill('SIGTERM');
+
+      // Force kill after 5 seconds if still running
       setTimeout(() => {
-        if (this.child && !this.child.killed) {
-          this.child.kill('SIGKILL');
+        if (!resolved && child && !child.killed) {
+          console.log('Child process did not exit gracefully, force killing...');
+          child.kill('SIGKILL');
+          
+          // Give it a moment to force kill, then resolve anyway
+          setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              resolve();
+            }
+          }, 1000);
         }
       }, 5000);
-    }
+    });
   }
 
   addClient(clientId, socket) {
@@ -323,14 +355,35 @@ function createServer(options) {
     }
   });
 
-  // Graceful shutdown
-  process.on('SIGINT', () => {
-    console.log('\nShutting down gracefully...');
-    processManager.kill();
-    server.close(() => {
-      process.exit(0);
-    });
-  });
+  // Graceful shutdown - handle both SIGINT and SIGTERM
+  const gracefulShutdown = async (signal) => {
+    console.log(`\nReceived ${signal}, shutting down gracefully...`);
+    
+    try {
+      // First, kill the child process and wait for it to exit
+      await processManager.kill();
+      console.log('Child process terminated successfully.');
+      
+      // Then close the server
+      server.close(() => {
+        console.log('Server closed.');
+        process.exit(0);
+      });
+      
+      // Force exit after 2 more seconds if server doesn't close
+      setTimeout(() => {
+        console.log('Force exiting...');
+        process.exit(1);
+      }, 2000);
+      
+    } catch (error) {
+      console.error('Error during shutdown:', error);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 // Parse command line arguments

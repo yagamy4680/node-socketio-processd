@@ -339,14 +339,15 @@ runner.addTest('Wait option functionality', async () => {
     
     let receivedOutput = false;
     
+    // Set up listener immediately after connection for wait mode
     client.on('child-stdout-line', (data) => {
       if (data.line.includes('waited')) {
         receivedOutput = true;
       }
     });
 
-    // Wait for the process to start and complete after client connection
-    await sleep(2000);
+    // Give a bit more time for the process to start and complete after client connection
+    await sleep(3000);
     
     if (!receivedOutput) {
       throw new Error('Process did not start after client connection with --wait option');

@@ -120,7 +120,22 @@ client.emit('request-restart');
 - **Wait Mode**: Option to wait for client connection before starting process
 - **Flexible Output**: Both raw binary and line-based text output modes
 - **Input Support**: Send input to child process via Socket.IO
-- **Graceful Shutdown**: Handles SIGINT and properly terminates child processes
+- **Graceful Shutdown**: Handles SIGINT/SIGTERM and properly terminates child processes
+
+## Graceful Shutdown
+
+When the tool receives a SIGINT (Ctrl+C) or SIGTERM signal, it performs a graceful shutdown:
+
+1. **Graceful Termination**: Sends SIGTERM to the child process for graceful shutdown
+2. **Wait Period**: Waits up to 5 seconds for the child process to exit cleanly  
+3. **Force Kill**: If the child process doesn't exit within 5 seconds, sends SIGKILL to force termination
+4. **Server Cleanup**: Closes the Socket.IO server and exits the main process
+
+This ensures that:
+- Child processes have a chance to clean up resources
+- Long-running processes are not left orphaned
+- The tool exits cleanly in all scenarios
+- No zombie processes are left behind
 
 ## Testing
 
