@@ -2,6 +2,29 @@
 
 A command-line tool that wraps existing CLI programs and allows access via Socket.IO. This enables you to run command-line programs on a server and interact with them from a web browser or any other Socket.IO client.
 
+## Project Structure
+
+```
+node-socketio-processd/
+├── bin/                    # Executable files
+│   └── node-socketio-processd
+├── docs/                   # Documentation
+│   └── REQUIREMENTS.md
+├── src/                    # Source code
+│   └── index.js           # Main implementation
+├── test/                   # Test files
+│   ├── test.js            # Main test suite
+│   ├── reproduce-test.js  # Test reproduction script
+│   └── simple-test.js     # Simple test utility
+├── tools/                  # Development and debugging tools
+│   ├── line-client.js     # Socket.IO client for monitoring
+│   ├── debug-client.js    # Debug client utility
+│   └── debug-simple.js    # Simple debug script
+├── package.json           # Node.js project configuration
+├── package-lock.json      # Dependency lock file
+└── README.md              # This file
+```
+
 ## Installation
 
 ```bash
@@ -75,6 +98,8 @@ node-socketio-processd --line -- tail -f /var/log/system.log
 
 ## Tools
 
+The `tools/` directory contains various utilities for development, debugging, and monitoring:
+
 ### Line Client (`tools/line-client.js`)
 
 A client tool that connects to a Socket.IO server and displays all events in the console with colored output.
@@ -117,6 +142,19 @@ node tools/line-client.js --help
 🏁 Process exited with code 0
 👋 Exiting client due to child process exit...
 ```
+
+### Debug Tools
+
+- **`tools/debug-simple.js`**: Simple debug script for testing basic Socket.IO functionality
+- **`tools/debug-client.js`**: Advanced debug client with detailed event monitoring
+
+### Test Utilities  
+
+The `test/` directory contains:
+
+- **`test/test.js`**: Main test suite with comprehensive functionality tests
+- **`test/reproduce-test.js`**: Script to reproduce specific test scenarios
+- **`test/simple-test.js`**: Simple test utility for quick validation
 
 ## Client Example
 
