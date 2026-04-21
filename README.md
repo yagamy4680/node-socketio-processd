@@ -73,6 +73,51 @@ node-socketio-processd --line -- tail -f /var/log/system.log
   - Data: Buffer or string
 - `request-restart`: Request manual restart of the child process (when --restart is enabled)
 
+## Tools
+
+### Line Client (`tools/line-client.js`)
+
+A client tool that connects to a Socket.IO server and displays all events in the console with colored output.
+
+#### Usage
+
+```bash
+node tools/line-client.js <server-url>
+```
+
+#### Examples
+
+```bash
+# Connect to local server
+node tools/line-client.js http://127.0.0.1:8000
+
+# Connect to remote server  
+node tools/line-client.js http://example.com:3000
+
+# Show help
+node tools/line-client.js --help
+```
+
+#### Features
+
+- **Colored Output**: Different colors for different event types (green for stdout, red for stderr, etc.)
+- **Timestamp Display**: Shows timestamps for all output events
+- **Auto Exit**: Automatically exits when the child process exits
+- **Graceful Shutdown**: Handles Ctrl+C for clean disconnection
+- **Connection Status**: Shows connection status and errors
+- **Event Monitoring**: Displays all Socket.IO events from the server
+
+#### Example Output
+
+```
+🔌 Connecting to Socket.IO server: http://127.0.0.1:8000
+✅ Connected to server (abc123)
+📋 Process Info: PID=1234, Command="echo Hello World"
+[2026-04-21T12:00:00.000Z] 📤 STDOUT: Hello World
+🏁 Process exited with code 0
+👋 Exiting client due to child process exit...
+```
+
 ## Client Example
 
 ```javascript
